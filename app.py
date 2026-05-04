@@ -36,15 +36,26 @@ if "vectorstore_path" not in st.session_state:
 
 # ---- Sidebar ----
 with st.sidebar:
-    st.header("📁 Upload Your PDF")
-    uploaded_file = st.file_uploader(
-        "Choose PDF file",
-        type="pdf"
+    st.header("📁 Upload Your PDFs")
+    
+    # Multiple file uploader
+    uploaded_files = st.file_uploader(
+        "Choose PDF files",
+        type="pdf",
+        accept_multiple_files=True,  # ✅ Added this
+        help="You can select multiple PDF files"
     )
 
-    if uploaded_file is not None:
-        if st.button("Process PDF", type="primary"):
-            with st.spinner("Reading your PDF..."):
+    if uploaded_files:  # ✅ Changed from uploaded_file to uploaded_files
+        st.success(f"✅ {len(uploaded_files)} file(s) selected")
+        
+        # Show uploaded file names
+        with st.expander("📄 Selected Files"):
+            for file in uploaded_files:
+                st.write(f"• {file.name}")
+        
+        if st.button("Process PDFs", type="primary"):
+            with st.spinner("Reading your PDFs..."):
 
                 # STEP 1: Clear everything
                 st.session_state.chat_history = []
@@ -58,24 +69,40 @@ with st.sidebar:
                     )
                     st.session_state.vectorstore_path = None
 
-                # Save uploaded file temporarily
-                with tempfile.NamedTemporaryFile(
-                    delete=False,
-                    suffix=".pdf"
-                ) as tmp_file:
-                    tmp_file.write(uploaded_file.read())
-                    tmp_path = tmp_file.name
+                all_documents = []  # ✅ Store all documents here
+                total_pages = 0
+                
+                # ✅ Process EACH uploaded file
+                for uploaded_file in uploaded_files:
+                    # Save uploaded file temporarily
+                    with tempfile.NamedTemporaryFile(
+                        delete=False,
+                        suffix=".pdf"
+                    ) as tmp_file:
+                        tmp_file.write(uploaded_file.read())
+                        tmp_path = tmp_file.name
 
-                # Load PDF
-                loader = PyPDFLoader(tmp_path)
-                documents = loader.load()
+                    # Load PDF
+                    loader = PyPDFLoader(tmp_path)
+                    documents = loader.load()
+                    
+                    # Add source filename to metadata
+                    for doc in documents:
+                        doc.metadata['source_file'] = uploaded_file.name
+                    
+                    all_documents.extend(documents)  # ✅ Add to combined list
+                    total_pages += len(documents)
 
+                    # Clean temp PDF file
+                    os.unlink(tmp_path)
+
+                # ✅ Now process ALL documents together
                 # Split into chunks
                 text_splitter = RecursiveCharacterTextSplitter(
                     chunk_size=1000,
                     chunk_overlap=200
                 )
-                chunks = text_splitter.split_documents(documents)
+                chunks = text_splitter.split_documents(all_documents)
 
                 # Create embeddings
                 embeddings = HuggingFaceEmbeddings(
@@ -85,7 +112,7 @@ with st.sidebar:
                 # Create fresh temp directory
                 temp_dir = tempfile.mkdtemp()
 
-                # Create FRESH vectorstore
+                # Create FRESH vectorstore with ALL PDFs
                 vectorstore = Chroma.from_documents(
                     chunks,
                     embeddings,
@@ -116,21 +143,20 @@ with st.sidebar:
                     retriever=vectorstore.as_retriever(
                         search_kwargs={"k": 3}
                     ),
-                    memory=memory
+                    memory=memory,
+                    return_source_documents=True  # ✅ Added this
                 )
 
                 st.session_state.pdf_processed = True
 
-                # Clean temp PDF file
-                os.unlink(tmp_path)
-
-            st.success(f"✅ PDF Processed!")
-            st.info(f"📄 Pages: {len(documents)}")
+            st.success(f"✅ All PDFs Processed!")
+            st.info(f"📁 Files: {len(uploaded_files)}")
+            st.info(f"📄 Total Pages: {total_pages}")
             st.info(f"🔢 Chunks: {len(chunks)}")
 
     # Clear button
     if st.session_state.pdf_processed:
-        if st.button("🗑️ Clear & Upload New PDF"):
+        if st.button("🗑️ Clear Chat"):
             # Clear vectorstore
             if st.session_state.vectorstore_path is not None:
                 shutil.rmtree(
@@ -186,6 +212,7 @@ else:
             })
 
             # Get AI response
+            # Get AI response
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     response = st.session_state.chain({
@@ -197,20 +224,21 @@ else:
                         "No answer generated"
                     )
                     st.write(answer)
-
-                    # Show sources
-                    sources = response.get(
-                        "source_documents", []
-                    )
-                    if sources:
-                        with st.expander("📍 Source Pages"):
-                            for doc in sources:
-                                page = doc.metadata.get(
-                                    'page', 'Unknown'
-                                )
-                                st.write(f"**Page {page + 1}:**")
-                                st.write(doc.page_content[:200])
-                                st.divider()
+                
+                # ✅ MOVED OUTSIDE spinner but INSIDE chat_message
+                # Show sources
+                sources = response.get(
+                    "source_documents", []
+                )
+                if sources:
+                    with st.expander("📍 Source Pages"):
+                        for doc in sources:
+                            page = doc.metadata.get('page', 'Unknown')
+                            source_file = doc.metadata.get('source_file', 'Unknown')
+                            
+                            st.write(f"**📄 {source_file}** - Page {page + 1}")
+                            st.write(doc.page_content[:200])
+                            st.divider()
 
             # Add response to history
             st.session_state.chat_history.append({
